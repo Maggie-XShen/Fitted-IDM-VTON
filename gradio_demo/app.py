@@ -22,7 +22,7 @@ from diffusers import DDPMScheduler,AutoencoderKL
 from typing import List
 from detectron2.data.detection_utils import convert_PIL_to_numpy,_apply_exif_orientation
 
-sys.path.append('/content/IDM-VTON')
+sys.path.append('/content/Fitted-IDM-VTON')
 
 from preprocess.humanparsing.run_parsing import Parsing
 from preprocess.openpose.run_openpose import OpenPose
