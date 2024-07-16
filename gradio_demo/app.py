@@ -4,6 +4,8 @@ import sys
 import torch
 import argparse
 import os
+import io
+import boto3
 import numpy as np
 from PIL import Image
 from transformers import AutoTokenizer
@@ -34,6 +36,25 @@ from src.unet_hacked_tryon import UNet2DConditionModel
 
 device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
+
+from botocore.exceptions import ClientError
+import uuid
+from io import BytesIO
+
+
+os.environ['AWS_ACCESS_KEY_ID'] = 'access_key_name'
+os.environ['AWS_SECRET_ACCESS_KEY'] = 'secret_access_key_name'
+
+
+def upload_to_s3(pil_image, bucket, key):
+    image_buffer = io.BytesIO()
+    pil_image.save(image_buffer, format='PNG')
+    image_buffer.seek(0)
+
+    s3_client = boto3.client('s3')
+    s3_client.upload_fileobj(image_buffer, bucket, key)
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Virtual Try-on App')
     parser.add_argument('--model_img', type=str, required=True, help='URL or path to the model image')
@@ -45,6 +66,7 @@ def parse_arguments():
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
 
     return parser.parse_args()
+
 
 def pil_to_binary_mask(pil_image, threshold=0):
     np_image = np.array(pil_image)
@@ -61,12 +83,18 @@ def pil_to_binary_mask(pil_image, threshold=0):
 
 base_path = 'yisol/IDM-VTON'
 
-unet = UNet2DConditionModel.from_pretrained(
-    base_path,
-    subfolder="unet",
-    torch_dtype=torch.float16,
-)
-unet.requires_grad_(False)
+try:
+    unet = UNet2DConditionModel.from_pretrained(
+        base_path,
+        subfolder="unet",
+        torch_dtype=torch.float16,
+    )
+    sys.stdout.flush()
+    unet.requires_grad_(False)
+except Exception as e:
+    print(f"An error occurred: {e}")
+
+
 tokenizer_one = AutoTokenizer.from_pretrained(
     base_path,
     subfolder="tokenizer",
@@ -109,6 +137,7 @@ UNet_Encoder = UNet2DConditionModel_ref.from_pretrained(
 )
 
 parsing_model = Parsing(0)
+
 openpose_model = OpenPose(0)
 
 UNet_Encoder.requires_grad_(False)
@@ -139,23 +168,15 @@ pipe = TryonPipeline.from_pretrained(
 )
 pipe.unet_encoder = UNet_Encoder
 
-def start_tryon(model_img_url, garm_img_url, garment_des, is_checked, is_checked_crop, denoise_steps, seed):
-    # background_img = input_dict["dict"]["background"]
-    # garm_img = input_dict["garm_img"]
-    # garment_des = input_dict["garment_des"]
-    # is_checked = input_dict["is_checked"]
-    # is_checked_crop = input_dict["is_checked_crop"]
-    # denoise_steps = input_dict["denoise_steps"]
-    # seed = input_dict["seed"]
 
+
+def start_tryon(model_img_url, garm_img_url, garment_des, is_checked, is_checked_crop, denoise_steps, seed):
     response = requests.get(model_img_url)
     model_img = Image.open(BytesIO(response.content))
 
-    # Fetch and load garment image from URL
     response = requests.get(garm_img_url)
     garm_img = Image.open(BytesIO(response.content))
 
-    # Convert and resize images
     model_img = model_img.convert("RGB").resize((768, 1024))
     garm_img = garm_img.convert("RGB").resize((768, 1024))
 
@@ -266,8 +287,17 @@ def start_tryon(model_img_url, garm_img_url, garment_des, is_checked, is_checked
         return images[0], mask_gray
 
 
+
 if __name__ == '__main__':
     args = parse_arguments()
     result_image, result_mask = start_tryon(args.model_img, args.garm_img, args.garment_des, args.is_checked, args.is_checked_crop, args.denoise_steps, args.seed)
-    result_image.save("result_image.png")
-    result_mask.save("result_mask.png")
+    print(type(result_image))
+    result_image_bucket = 'idm-vton-result-images'
+    result_image_key = 'result_image.png'
+    upload_to_s3(result_image, result_image_bucket, result_image_key)
+    print(f"Result image uploaded to S3: {result_image_bucket}/{result_image_key}")
+
+    mask_bucket = 'idm-vton-result-masks'
+    mask_key = 'mask.png'
+    upload_to_s3(result_mask, mask_bucket, mask_key)
+    print(f"Mask uploaded to S3: {mask_bucket}/{mask_key}")
